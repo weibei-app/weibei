@@ -884,10 +884,10 @@ public enum SelectionAnchorCoordinate {
 }
 
 public enum SelectionFloatingAgentPlacement {
-    public static let expandedHalfWidth = 230.0
+    public static let expandedHalfWidth = 190.0
     public static let compactHalfWidth = 82.0
-    /// Approximate half-height used to keep an expanded panel on-canvas.
-    public static let expandedHalfHeight = 210.0
+    /// Bounds the expanded panel after its content-only downward growth offset.
+    public static let expandedHalfHeight = 230.0
     public static let compactHalfHeight = 28.0
 
     public static func isVisible(

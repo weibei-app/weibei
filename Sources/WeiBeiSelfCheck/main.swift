@@ -942,7 +942,9 @@ expect(!SelectionFloatingAgentPlacement.isVisible(surface: .selectionFloat, hasS
 expect(SelectionFloatingAgentPlacement.isVisible(surface: .selectionFloat, hasSelection: true, hasAnchor: true, pinned: false), "selection agent appears when anchored")
 expect(SelectionFloatingAgentPlacement.isVisible(surface: .selectionFloat, hasSelection: true, hasAnchor: false, pinned: false, keepOpen: true), "keepOpen floats stay visible without a live drag anchor")
 expect(SelectionFloatingAgentPlacement.isVisible(surface: .selectionFloat, hasSelection: false, hasAnchor: false, pinned: true), "pinned floats stay visible without selection")
-expect(SelectionFloatingAgentPlacement.expandedHalfWidth == 230 && SelectionFloatingAgentPlacement.compactHalfWidth == 82, "selection agent placement constants match the compact and expanded surfaces")
+expect(SelectionFloatingAgentPlacement.expandedHalfWidth == 190
+    && SelectionFloatingAgentPlacement.expandedHalfHeight == 230
+    && SelectionFloatingAgentPlacement.compactHalfWidth == 82, "selection agent placement constants bound the narrow expanded surface and compact prompt")
 let floatingPoint = SelectionFloatingAgentPlacement.position(
     anchor: FloatingAgentCoordinate(x: 320, y: 200),
     canvas: FloatingAgentCoordinate(x: 1200, y: 800)
@@ -952,8 +954,8 @@ let topInsetFloatingPoint = SelectionFloatingAgentPlacement.position(
     canvas: FloatingAgentCoordinate(x: 1200, y: 800),
     topInset: 42
 )
-expect(floatingPoint.x == 562 && floatingPoint.y == 245.5, "selection agent opens close beside the text anchor")
-expect(topInsetFloatingPoint.x == 562 && topInsetFloatingPoint.y == 228, "selection agent compensates top bar coordinate space")
+expect(floatingPoint.x == 522 && floatingPoint.y == 248.5, "selection agent opens close beside the text anchor")
+expect(topInsetFloatingPoint.x == 522 && topInsetFloatingPoint.y == 248, "selection agent compensates top bar coordinate space")
 let compactEdgeFloatingPoint = SelectionFloatingAgentPlacement.position(
     anchor: FloatingAgentCoordinate(x: 12, y: 200),
     canvas: FloatingAgentCoordinate(x: 1200, y: 800),
@@ -972,7 +974,7 @@ let edgeFloatingPoint = SelectionFloatingAgentPlacement.position(
     anchor: FloatingAgentCoordinate(x: 1160, y: 760),
     canvas: FloatingAgentCoordinate(x: 1200, y: 800)
 )
-expect(edgeFloatingPoint.x == 918 && edgeFloatingPoint.y == 572, "selection agent flips to the left of text near the window edge")
+expect(edgeFloatingPoint.x == 958 && edgeFloatingPoint.y == 552, "selection agent flips to the left of text near the window edge")
 expect(AgentMessage(role: .assistant, text: "整理完成", source: nil).isUsableAgentAnswer, "usable agent answer")
 expect(!AgentMessage(role: .assistant, text: "认证已失效", source: nil, failureKind: .unauthorized).isUsableAgentAnswer, "structured authentication failures are not writable")
 expect(!AgentMessage(role: .assistant, text: "请求失败", source: nil, failureKind: .generic).isUsableAgentAnswer, "structured agent failures are not writable")
