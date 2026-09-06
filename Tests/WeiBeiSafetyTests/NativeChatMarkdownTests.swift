@@ -160,7 +160,10 @@ final class NativeChatMarkdownTests: XCTestCase {
         }
         defer { coordinator.pipeline.invalidate() }
         let messageID = UUID()
-        coordinator.submit(markdown: source, messageID: messageID)
+        let markdownMemo = AgentMessageMarkdownMemo()
+        let preparedSource = markdownMemo.outputs(text: source, sources: [], language: .chinese).finalized
+        XCTAssertTrue(preparedSource.contains(codeSource))
+        coordinator.submit(markdown: preparedSource, messageID: messageID)
         await fulfillment(of: [initial], timeout: 5)
         let manager = try XCTUnwrap(textView.textLayoutManager)
         let storage = try XCTUnwrap(textView.textStorage)
@@ -195,7 +198,7 @@ final class NativeChatMarkdownTests: XCTestCase {
         XCTAssertTrue(narrowHeight.isFinite && narrowHeight >= firstHeight)
         textView.layoutSubtreeIfNeeded()
         checkCodeAttachmentSize()
-        coordinator.submit(markdown: source + "\n\n回答结束。", messageID: messageID)
+        coordinator.submit(markdown: markdownMemo.outputs(text: source + "\n\n回答结束。", sources: [], language: .chinese).finalized, messageID: messageID)
         await fulfillment(of: [completed], timeout: 5)
         XCTAssertTrue(coordinator.view === textView)
         XCTAssertTrue(textView.textLayoutManager === manager)

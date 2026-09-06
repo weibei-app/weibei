@@ -3870,7 +3870,7 @@ private struct AgentReplyActionCard: View {
 
 /// Memoizes display-only source and formula normalization for one message row.
 /// A reference type in @State so recomputation never invalidates the view.
-private final class AgentMessageMarkdownMemo {
+final class AgentMessageMarkdownMemo {
     private var key: String?
     private var display = ""
     private var finalized = ""
@@ -3899,8 +3899,6 @@ private enum AgentCitationParser {
     /// Matches `[材料：…]` / `[学习记录：上次位置]` style Agent citation labels.
     private static let pattern = #"\[(材料|笔记|选区|学习记录|学习记忆|会话)[：:]\s*([^\]\n]{1,300})\]"#
     private static let regex = try? NSRegularExpression(pattern: pattern)
-    private static let collapsedSpaces = try? NSRegularExpression(pattern: #"[ \t]{2,}"#)
-    private static let collapsedBlankLines = try? NSRegularExpression(pattern: #"\n{3,}"#)
     /// Tail of an unterminated citation label (`[材料：书法笔` mid-stream). The
     /// kind tokens are listed with every proper prefix so the tail is withheld
     /// from the very first character that can only belong to a citation. The
@@ -3911,38 +3909,18 @@ private enum AgentCitationParser {
     private static let trailingOpenCitation = try? NSRegularExpression(
         pattern: #"\[(?:(?:材|材料|笔|笔记|选|选区|学|学习|学习记|学习记录|学习记忆|会|会话)[：:]?[^\]\n]*)?$"#
     )
-    private static let trailingBlankLines = try? NSRegularExpression(pattern: #"\n{3,}$"#)
-    private static let trailingSpaces = try? NSRegularExpression(pattern: #"[ \t]{2,}$"#)
 
     static func parse(_ text: String) -> (displayText: String, citations: [AgentCitation]) {
         guard let regex else {
             return (text, [])
         }
-        // Prefix-stability for streaming: the markdown WebView extends its
-        // streaming session by suffix, so the display text must only ever
-        // grow by appends. A citation label is therefore withheld while it is
-        // still unterminated (it sits at the tail then), and stripped whole
-        // once it closes — the visible text never sees it, and stripping it
-        // removes nothing that was already shown. Trailing blank-line/space
-        // runs are likewise clamped at the tail so the whole-document
-        // collapse below never rewrites already-shown characters. Without
-        // this, every closing citation rewrote the middle of the buffer and
-        // forced a whole-document re-parse (the visible completion flash).
+        // Hide an incomplete citation while it arrives. Whitespace belongs to
+        // the answer: collapsing it changes code indentation and blank lines.
         var working = text
         if let trailingOpenCitation,
            let match = trailingOpenCitation.firstMatch(in: working, range: fullNSRange(working)),
            let range = Range(match.range, in: working) {
             working = String(working[..<range.lowerBound])
-        }
-        if let trailingBlankLines,
-           let match = trailingBlankLines.firstMatch(in: working, range: fullNSRange(working)),
-           let range = Range(match.range, in: working) {
-            working.replaceSubrange(range, with: "\n\n")
-        }
-        if let trailingSpaces,
-           let match = trailingSpaces.firstMatch(in: working, range: fullNSRange(working)),
-           let range = Range(match.range, in: working) {
-            working.replaceSubrange(range, with: " ")
         }
         let nsRange = fullNSRange(working)
         var citations: [AgentCitation] = []
@@ -3967,15 +3945,7 @@ private enum AgentCitationParser {
                 )
             )
         }
-        var cleaned = regex.stringByReplacingMatches(in: working, options: [], range: nsRange, withTemplate: "")
-        if let collapsedSpaces {
-            cleaned = collapsedSpaces.stringByReplacingMatches(
-                in: cleaned, options: [], range: fullNSRange(cleaned), withTemplate: " ")
-        }
-        if let collapsedBlankLines {
-            cleaned = collapsedBlankLines.stringByReplacingMatches(
-                in: cleaned, options: [], range: fullNSRange(cleaned), withTemplate: "\n\n")
-        }
+        let cleaned = regex.stringByReplacingMatches(in: working, options: [], range: nsRange, withTemplate: "")
         return (cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? working : cleaned, citations)
     }
 
