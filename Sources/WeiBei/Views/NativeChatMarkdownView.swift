@@ -83,7 +83,8 @@ struct NativeChatMarkdownView: NSViewRepresentable {
         coordinator.submit(markdown: markdown, messageID: messageID)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeChatTextView, context: Context) -> CGSize? {
-        guard let width = proposal.width, width > 0 else { return nil }
+        // An infinite proposal asks for flexibility; it must not resize the live text container.
+        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
         if abs(nsView.frame.width - width) > 0.5 { nsView.setFrameSize(NSSize(width: width, height: max(1, nsView.frame.height))) }
         return CGSize(width: width, height: context.coordinator.measuredHeight())
     }

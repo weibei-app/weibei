@@ -220,24 +220,24 @@ final class NativeChatMarkdownTests: XCTestCase {
     }
 
 
-    // Completing an answer with no available note actions must not insert an empty footer.
+    // SwiftUI sizing probes must not resize the text to infinity or add an empty completion footer.
     @MainActor func testCompletionKeepsActualMessageHeightWithoutNoteActions() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = WorkspaceStore(workspaceDirectory: root, startsAtBlankEntries: true, startsCourseFileMaintenance: false)
-        let source = "生成结束时，正文和阅读位置应保持不变。"
+        let source = String(repeating: "生成结束时，正文和阅读位置应保持不变。", count: 12)
         var message = AgentMessage(role: .assistant, text: source, source: nil, completionState: .generating)
         store.messages = [message]
         XCTAssertNil(store.selectionContext)
         XCTAssertFalse(store.canReplaceNoteSelection)
-        func bubble(_ value: AgentMessage) -> some View {
+        func bubble(_ value: AgentMessage, width: CGFloat = 560) -> some View {
             AgentBubble(message: value,
                         liveStreamingText: value.completionState == .generating ? source : nil,
                         isStreaming: value.completionState == .generating)
                 .environmentObject(store)
-                .frame(width: 560)
+                .frame(width: width)
         }
         let host = NSHostingView(rootView: bubble(message))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
@@ -263,6 +263,15 @@ final class NativeChatMarkdownTests: XCTestCase {
         }
         let before = try await settledHeight()
         let textView = try XCTUnwrap(nativeText(in: host))
+        for width: CGFloat in [480, 300, 560] {
+            window.setContentSize(NSSize(width: width, height: 300))
+            host.rootView = bubble(message, width: width)
+            let height = try await settledHeight()
+            XCTAssertGreaterThan(textView.frame.width, 0)
+            XCTAssertLessThanOrEqual(textView.frame.width, width)
+            XCTAssertEqual(textView.textContainer?.size.width, textView.frame.width)
+            if width == 300 { XCTAssertGreaterThan(height, before) }
+        }
         message.completionState = .completed
         store.messages = [message]
         host.rootView = bubble(message)
