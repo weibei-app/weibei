@@ -72,6 +72,14 @@ struct StableDocumentWorkspace: NSViewRepresentable {
         applyEmptyBoardPaper(to: splitView, mode: appearanceMode)
     }
 
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: StableDocumentSplitView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite, width >= 0, height >= 0 else { return nil }
+        // The canvas owns this size. Default AppKit fitting would recursively
+        // measure every hosted pane and its rich text whenever scrolling lays out.
+        return CGSize(width: width, height: height)
+    }
+
     private func applyEmptyBoardPaper(to splitView: StableDocumentSplitView, mode: WeiBeiAppearanceMode) {
         let paper = WeiBeiNativePalette.paper(for: mode)
         let cgPaper = paper.cgColor
