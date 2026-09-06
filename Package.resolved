@@ -1,14 +1,6 @@
 {
   "pins" : [
     {
-      "identity" : "highlightswift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/appstefan/highlightswift",
-      "state" : {
-        "revision" : "99c431b38a1444a5fd6a4978307fbbefe3a7af53"
-      }
-    },
-    {
       "identity" : "sparkle",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",

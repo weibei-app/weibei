@@ -175,7 +175,6 @@ if [[ "$CHECK_ONLY" != true ]]; then
     "$BUILD_DIR/${PRODUCT_NAME}_${PRODUCT_NAME}.bundle"
     "$BUILD_DIR/${PRODUCT_NAME}_WeiBeiCore.bundle"
     "$BUILD_DIR/SwiftMath_SwiftMath.bundle"
-    "$BUILD_DIR/HighlightSwift_HighlightSwift.bundle"
   )
 
   rm -rf "$APP_BUNDLE"

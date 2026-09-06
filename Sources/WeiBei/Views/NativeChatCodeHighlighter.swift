@@ -14,9 +14,7 @@ actor NativeChatCodeHighlighter {
     func tokens(_ source: String, language: String?) throws -> [Token] {
         try Task.checkCancellation()
         if tokenize == nil {
-            let resources = WeiBeiResources.bundle.bundleURL.deletingLastPathComponent()
-                .appendingPathComponent("HighlightSwift_HighlightSwift.bundle")
-            guard let script = Bundle(url: resources)?.url(forResource: "highlight.min", withExtension: "js"),
+            guard let script = WeiBeiResources.bundle.url(forResource: "highlight.min", withExtension: "js"),
                   let context = JSContext() else { throw Failure.missingResource }
             context.evaluateScript(try String(contentsOf: script, encoding: .utf8))
             if let error = context.exception { throw Failure.javascript(error.toString()) }

@@ -17,8 +17,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
         .package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.7.3"),
-        .package(url: "https://github.com/WroughtMind/SwiftMath", revision: "b6d15610552aa04a54c36bf205efaf34409dc335"),
-        .package(url: "https://github.com/appstefan/highlightswift", revision: "99c431b38a1444a5fd6a4978307fbbefe3a7af53")
+        .package(url: "https://github.com/WroughtMind/SwiftMath", revision: "b6d15610552aa04a54c36bf205efaf34409dc335")
     ],
     targets: [
         .target(
@@ -40,8 +39,7 @@ let package = Package(
                 "WeiBeiCore",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown"),
-                .product(name: "SwiftMath", package: "SwiftMath"),
-                .product(name: "HighlightSwift", package: "highlightswift")
+                .product(name: "SwiftMath", package: "SwiftMath")
             ],
             exclude: ["WebEditor"],
             resources: [
