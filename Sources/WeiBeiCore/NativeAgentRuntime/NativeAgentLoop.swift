@@ -168,7 +168,14 @@ public actor NativeAgentLoop {
                             case let .textDelta(_, text):
                                 stepText += text
                                 collectedText += text
-                                await progress?(.text(collectedText, []))
+                                if !contentBlocks.isEmpty {
+                                    if case let .text(previous)? = contentBlocks.last {
+                                        contentBlocks[contentBlocks.count - 1] = .text(previous + text)
+                                    } else {
+                                        contentBlocks.append(.text(text))
+                                    }
+                                }
+                                await progress?(.text(collectedText, contentBlocks))
                             case let .webSearchSource(url):
                                 if !context.currentRunSourceURLs.contains(url) {
                                     context.currentRunSourceURLs.append(url)
@@ -276,6 +283,7 @@ public actor NativeAgentLoop {
                     try checkCancelled()
                     pendingUnstarted.removeAll { $0.id == call.id }
                     let result: NativeToolExecutionResult
+                    let previousBlocks = contentBlocks
                     if let failure = callResult.failure {
                         result = NativeToolExecutionResult(text: failure.localizedDescription, isError: true)
                     } else if call.name == "$web_search" {
@@ -308,6 +316,17 @@ public actor NativeAgentLoop {
                         contentBlocks: &contentBlocks,
                         context: &context
                     )
+                    if call.name == "weibei_visualize", !result.isError,
+                       let changed = contentBlocks.first(where: { block in
+                           if case .visualization = block { return !previousBlocks.contains(block) }
+                           return false
+                       }), case let .visualization(visualization) = changed {
+                        // Preserve text before the first figure, then append later text in place.
+                        if contentBlocks.count == 1, !collectedText.isEmpty {
+                            contentBlocks.insert(.text(collectedText), at: 0)
+                        }
+                        await progress?(.visualization(visualization, contentBlocks))
+                    }
                     _ = try await ledger.append { seq, time in
                         NativeSessionEvent(
                             type: .toolResult,
@@ -470,7 +489,15 @@ public actor NativeAgentLoop {
            let spec = details["spec"],
            let specData = try? JSONSerialization.data(withJSONObject: spec),
            let specJSON = String(data: specData, encoding: .utf8) {
-            contentBlocks.append(.visualization(AgentVisualization(id: id, specJSON: specJSON)))
+            let block = AgentMessageContentBlock.visualization(AgentVisualization(id: id, specJSON: specJSON))
+            if let index = contentBlocks.firstIndex(where: {
+                if case let .visualization(value) = $0 { return value.id == id }
+                return false
+            }) {
+                contentBlocks[index] = block
+            } else {
+                contentBlocks.append(block)
+            }
         }
         if name == "load_skill" {
             if let loaded = details["loaded"] as? [String: Any],

@@ -16,7 +16,7 @@ enum AgentFinalizedMarkdownHeightCache {
     }
 
     static func store(_ height: CGFloat, for key: String) {
-        // Called only from a real WebKit contentHeightChanged event. Store the
+        // Called only after the real message row is measured. Store the
         // raw measured value, including legitimate <=44pt short block content;
         // the synthetic 44pt SwiftUI loading frame never reaches this method.
         guard height.isFinite, height > 0 else { return }
@@ -30,11 +30,11 @@ enum AgentFinalizedMarkdownHeightCache {
         evictLocked()
     }
 
-    static func cacheKey(messageID: UUID?, text: String, widthBucket: Int, wideTypography: Bool) -> String {
+    static func cacheKey(messageID: UUID?, text: String, widthBucket: Int, wideTypography: Bool, textScale: CGFloat = 1) -> String {
         let id = messageID?.uuidString ?? "anon"
-        let prefix = text.prefix(64)
+        let content = text.hashValue
         let tier = wideTypography ? "wide" : "compact"
-        return "\(id):\(text.count):\(prefix):w\(widthBucket):\(tier)"
+        return "\(id):\(content):w\(widthBucket):\(tier):s\(textScale)"
     }
 
     static func widthBucket(_ width: CGFloat) -> Int {

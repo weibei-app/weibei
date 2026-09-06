@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import WeiBeiCore
 
-/// Offscreen chat WebView unload. Default **on**: missing UserDefaults key
+/// Offscreen native message unload. Default **on**: missing UserDefaults key
 /// enables it; an explicit false keeps the old Eager VStack.
 enum AgentChatOffscreenUnloadFlag {
     static let defaultsKey = "weibei.chat.unloadOffscreenWebViews"
@@ -29,7 +29,7 @@ enum AgentChatOffscreenUnloadFlag {
 
 enum AgentMessageViewportWindow {
     /// Screens of slack above and below the viewport before a cached row may
-    /// drop its WKWebView. Large on purpose: remount must finish before the
+    /// release its text view. Large on purpose: remount must finish before the
     /// row is on screen, unlike LazyVStack recycle at the clip edge.
     static let extraScreens = 3
 
@@ -59,7 +59,8 @@ enum AgentMessageViewportWindow {
                 }
                 y = rowMax + spacing
             } else {
-                y += spacing
+                // Positions below an unmeasured row are not known yet.
+                break
             }
         }
         return placeholders
@@ -70,6 +71,7 @@ enum AgentMessageViewportWindow {
         messages: [AgentMessage],
         layoutWidth: CGFloat,
         wideTypography: Bool,
+        textScale: CGFloat = 1,
         viewportMinY: CGFloat,
         viewportHeight: CGFloat,
         extraScreens: Int = extraScreens,
@@ -79,7 +81,8 @@ enum AgentMessageViewportWindow {
         let heights = cachedHeights(
             messages: messages,
             layoutWidth: layoutWidth,
-            wideTypography: wideTypography
+            wideTypography: wideTypography,
+            textScale: textScale
         )
         let indices = placeholderIndices(
             heights: heights,
@@ -88,44 +91,38 @@ enum AgentMessageViewportWindow {
             extraScreens: extraScreens,
             spacing: spacing
         )
-        return Set(indices.map { messages[$0].id })
+        return Set(indices.filter { canUnload(messages[$0]) }.map { messages[$0].id })
     }
 
     static func cachedHeights(
         messages: [AgentMessage],
         layoutWidth: CGFloat,
-        wideTypography: Bool
+        wideTypography: Bool,
+        textScale: CGFloat = 1
     ) -> [CGFloat?] {
         messages.map {
-            cachedHeight(message: $0, layoutWidth: layoutWidth, wideTypography: wideTypography)
+            measuredHeight(message: $0, layoutWidth: layoutWidth, wideTypography: wideTypography, textScale: textScale)
         }
     }
 
     static func cachedHeight(
         message: AgentMessage,
         layoutWidth: CGFloat,
-        wideTypography: Bool
+        wideTypography: Bool,
+        textScale: CGFloat = 1
     ) -> CGFloat? {
         guard canUnload(message) else { return nil }
-        let prepared = AgentChatKaTeXMarkdown.prepare(message.text)
-        let bucket = AgentFinalizedMarkdownHeightCache.widthBucket(layoutWidth)
-        if let height = AgentFinalizedMarkdownHeightCache.height(
-            for: AgentFinalizedMarkdownHeightCache.cacheKey(
-                messageID: message.id,
-                text: prepared,
-                widthBucket: bucket,
-                wideTypography: wideTypography
-            )
-        ) {
-            return height
-        }
-        guard prepared != message.text else { return nil }
+        return measuredHeight(message: message, layoutWidth: layoutWidth, wideTypography: wideTypography, textScale: textScale)
+    }
+
+    private static func measuredHeight(message: AgentMessage, layoutWidth: CGFloat, wideTypography: Bool, textScale: CGFloat) -> CGFloat? {
         return AgentFinalizedMarkdownHeightCache.height(
             for: AgentFinalizedMarkdownHeightCache.cacheKey(
                 messageID: message.id,
                 text: message.text,
-                widthBucket: bucket,
-                wideTypography: wideTypography
+                widthBucket: AgentFinalizedMarkdownHeightCache.widthBucket(layoutWidth),
+                wideTypography: wideTypography,
+                textScale: textScale
             )
         )
     }

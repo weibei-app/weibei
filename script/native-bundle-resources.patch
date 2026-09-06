@@ -1,0 +1,31 @@
+--- a/SwiftMath/Sources/SwiftMath/MathBundle/MathFont.swift
++++ b/SwiftMath/Sources/SwiftMath/MathBundle/MathFont.swift
+@@ -109,7 +109,7 @@
+                                                 attributes: .concurrent)
+ 
+     private func registerCGFont(mathFont: MathFont) throws {
+-        guard let frameworkBundleURL = Bundle.module.url(forResource: "mathFonts", withExtension: "bundle"),
++        guard let frameworkBundleURL = (Bundle.main.url(forResource: "SwiftMath_SwiftMath", withExtension: "bundle").flatMap(Bundle.init(url:)) ?? Bundle.module).url(forResource: "mathFonts", withExtension: "bundle"),
+               let resourceBundleURL = Bundle(url: frameworkBundleURL)?.path(forResource: mathFont.rawValue, ofType: "otf") else {
+             throw FontError.fontPathNotFound
+         }
+@@ -136,7 +136,7 @@
+     }
+     
+     private func registerMathTable(mathFont: MathFont) throws {
+-        guard let frameworkBundleURL = Bundle.module.url(forResource: "mathFonts", withExtension: "bundle"),
++        guard let frameworkBundleURL = (Bundle.main.url(forResource: "SwiftMath_SwiftMath", withExtension: "bundle").flatMap(Bundle.init(url:)) ?? Bundle.module).url(forResource: "mathFonts", withExtension: "bundle"),
+               let mathTablePlist = Bundle(url: frameworkBundleURL)?.url(forResource: mathFont.rawValue, withExtension:"plist") else {
+             throw FontError.fontPathNotFound
+         }
+--- a/SwiftMath/Sources/SwiftMath/MathRender/MTFont.swift
++++ b/SwiftMath/Sources/SwiftMath/MathRender/MTFont.swift
+@@ -47,7 +47,7 @@
+     
+     static var fontBundle:Bundle {
+         // Uses bundle for class so that this can be access by the unit tests.
+-        Bundle(url: Bundle.module.url(forResource: "mathFonts", withExtension: "bundle")!)!
++        Bundle(url: (Bundle.main.url(forResource: "SwiftMath_SwiftMath", withExtension: "bundle").flatMap(Bundle.init(url:)) ?? Bundle.module).url(forResource: "mathFonts", withExtension: "bundle")!)!
+     }
+     
+     /** Returns a copy of this font but with a different size. */

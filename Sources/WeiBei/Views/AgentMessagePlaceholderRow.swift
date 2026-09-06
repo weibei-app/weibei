@@ -1,9 +1,6 @@
 import SwiftUI
 
-/// Height-only stand-in for a chat row whose WKWebView was unmounted because it
-/// is more than N screens from the viewport. Deliberately content-free: a
-/// native-text preview never matches Milkdown typography, and that mismatch
-/// read as a glitch. Remount reuses the row's existing skeleton + fade.
+/// A measured distant row keeps the document's height while its native view is released.
 struct AgentMessagePlaceholderRow: View {
     var height: CGFloat
 
@@ -15,8 +12,7 @@ struct AgentMessagePlaceholderRow: View {
     }
 }
 
-/// Keeps Eager VStack identity. Far rows skip `content` so no WKWebView is
-/// created; nearby rows mount the real bubble (skeleton + fade on cold start).
+/// Preserve the current row height until the same answer is mounted again nearby.
 struct AgentMessageViewportGatedRow<Content: View>: View {
     var isPlaceholder: Bool
     var placeholderHeight: CGFloat?

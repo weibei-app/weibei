@@ -105,7 +105,65 @@ final class MarkdownImageSchemeHandler: NSObject, WKURLSchemeHandler, URLSession
         self.interfaceLanguage = interfaceLanguage
     }
 
+    /// Native chat shares the same bounded file and remote-image policy as the editor.
+    func loadImage(source: String, completion: @escaping (Data?) -> Void) {
+        if source.hasPrefix("data:"), let comma = source.firstIndex(of: ",") {
+            let header = String(source[source.index(source.startIndex, offsetBy: 5)..<comma])
+            let payload = String(source[source.index(after: comma)...])
+            let data = header.hasSuffix(";base64")
+                ? Data(base64Encoded: payload)
+                : payload.removingPercentEncoding.map { Data($0.utf8) }
+            guard let data, data.count <= CourseProjectFileWorker.markdownImageMaximumByteCount,
+                  MarkdownAttachmentStore.validatedImageMIMEType(data: data,
+                    suggestedMIMEType: String(header.split(separator: ";").first ?? ""), allowsSVG: true) != nil
+            else { completion(nil); return }
+            completion(data)
+            return
+        }
+        let base = URL(string: markdownBaseURLString)
+        guard let sourceURL = URL(string: source, relativeTo: base)?.absoluteURL else {
+            completion(nil)
+            return
+        }
+        var request = URLComponents()
+        request.scheme = "weibeiimage"
+        request.host = "image"
+        request.queryItems = [URLQueryItem(name: "src", value: sourceURL.absoluteString)]
+        guard let url = request.url else { completion(nil); return }
+        start(NativeImageLoad(request: URLRequest(url: url), completion: completion))
+    }
+
+    func validatedLocalImageURL(source: String) -> URL? {
+        guard let url = URL(string: source, relativeTo: URL(string: markdownBaseURLString))?.absoluteURL,
+              url.isFileURL, localImageData(url) != nil else { return nil }
+        return url
+    }
+
+    private final class NativeImageLoad: NSObject, WKURLSchemeTask {
+        let request: URLRequest
+        private var data = Data()
+        private let completion: (Data?) -> Void
+
+        init(request: URLRequest, completion: @escaping (Data?) -> Void) {
+            self.request = request
+            self.completion = completion
+        }
+        func didReceive(_ response: URLResponse) {}
+        func didReceive(_ data: Data) { self.data.append(data) }
+        func didFinish() {
+            let result = data
+            DispatchQueue.main.async { self.completion(result) }
+        }
+        func didFailWithError(_ error: Error) {
+            DispatchQueue.main.async { self.completion(nil) }
+        }
+    }
+
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        start(urlSchemeTask)
+    }
+
+    private func start(_ urlSchemeTask: WKURLSchemeTask) {
         guard let requestURL = urlSchemeTask.request.url,
               let sourceURL = sourceURL(from: requestURL) else {
             fail(urlSchemeTask, code: 1)
@@ -133,24 +191,26 @@ final class MarkdownImageSchemeHandler: NSObject, WKURLSchemeHandler, URLSession
         load?.dataTask?.cancel()
     }
 
-    private func loadLocalImage(_ fileURL: URL, requestURL: URL, task urlSchemeTask: WKURLSchemeTask) {
+    private func localImageData(_ fileURL: URL) -> (data: Data, mime: String)? {
         guard let root = allowedRoots().first(where: {
             CourseProjectPathPolicy.relativePath(of: fileURL, inside: $0) != nil
         }),
         let data = try? CourseProjectFileWorker.readBoundedRegularFile(
-            at: fileURL,
-            inside: root,
+            at: fileURL, inside: root,
             maximumByteCount: CourseProjectFileWorker.markdownImageMaximumByteCount
         ),
-        let mimeType = MarkdownAttachmentStore.validatedImageMIMEType(
-            data: data,
-            suggestedMIMEType: mimeType(for: fileURL),
-            allowsSVG: true
-        ) else {
+        let mime = MarkdownAttachmentStore.validatedImageMIMEType(
+            data: data, suggestedMIMEType: mimeType(for: fileURL), allowsSVG: true
+        ) else { return nil }
+        return (data, mime)
+    }
+
+    private func loadLocalImage(_ fileURL: URL, requestURL: URL, task urlSchemeTask: WKURLSchemeTask) {
+        guard let image = localImageData(fileURL) else {
             sendMissingImage(for: requestURL, task: urlSchemeTask)
             return
         }
-        send(data, mimeType: mimeType, for: requestURL, task: urlSchemeTask)
+        send(image.data, mimeType: image.mime, for: requestURL, task: urlSchemeTask)
     }
 
     private func loadRemoteImage(_ sourceURL: URL, requestURL: URL, task urlSchemeTask: WKURLSchemeTask) {

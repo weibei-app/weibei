@@ -3210,64 +3210,27 @@ private final class FinalizedAgentMarkdownHarness: NSObject, WKScriptMessageHand
 
 private func verifyAgentChatMarkdownSourceContract() {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    let classifierPath = root.appendingPathComponent(
-        "Sources/WeiBei/Support/AgentChatKaTeXMarkdown.swift"
-    )
     let chatPath = root.appendingPathComponent("Sources/WeiBei/Views/NotesAgentView.swift")
-    let cachePath = root.appendingPathComponent(
-        "Sources/WeiBei/Views/AgentFinalizedMarkdownHeightCache.swift"
-    )
     let richMarkdownPath = root.appendingPathComponent(
         "Sources/WeiBei/Views/RichMarkdownEditorView.swift"
     )
     let webEditorPath = root.appendingPathComponent(
         "Sources/WeiBei/WebEditor/src/editor.ts"
     )
-    guard let classifier = try? String(contentsOf: classifierPath, encoding: .utf8),
-          let chat = try? String(contentsOf: chatPath, encoding: .utf8),
-          let cache = try? String(contentsOf: cachePath, encoding: .utf8),
+    guard let chat = try? String(contentsOf: chatPath, encoding: .utf8),
           let richMarkdown = try? String(contentsOf: richMarkdownPath, encoding: .utf8),
           let webEditor = try? String(contentsOf: webEditorPath, encoding: .utf8) else {
         expect(false, "could not read finalized Agent Markdown source contract")
         return
     }
 
-    expect(
-        classifier.contains("isSetextUnderline")
-            && classifier.contains("marker.isLetter || marker == \"!\" || marker == \"?\" || marker == \"/\"")
-            && classifier.contains("(\"Setext 标题\\n===\", true)")
-            && classifier.contains("(\"<article>文章</article>\", true)"),
-        "finalized Agent Markdown classifier lost Setext or general HTML-block routing checks"
-    )
-    expect(
-        chat.contains("layoutWidthKey: layoutWidthBucket")
-            && chat.contains("AgentFinalizedMarkdownHeightCache.widthBucket(layoutWidth)")
-            && chat.contains("guard previousBucket != nextBucket else { return }")
-            && !chat.contains(".id(\"\\(messageID?.uuidString ?? \"msg\")-\\(widthBucket)\")"),
-        "finalized Agent Markdown width changes must remeasure without rebuilding WKWebView"
-    )
-    expect(
-        chat.contains("onMeasuredHeight(measuredHeight)")
-            && chat.contains("let nextFrameHeight = max(measuredHeight, Self.compactPreviewLoadingHeight)")
-            && cache.contains("guard height.isFinite, height > 0 else { return }")
-            && chat.contains("abs(contentHeight - nextFrameHeight) < 2")
-            && !chat.contains("if freezeHeightAfterMeasure, heightFrozen { return }"),
-        "real short-block measurement must be independent from the 44pt minimum frame"
-    )
-    expect(
-        chat.contains("freezeHeightAfterMeasure: !isStreaming\n                        && (!paneStructureTransitionActive || isInScrollViewport == false)\n                        && isInScrollViewport == false"),
-        "visible finalized Markdown must remain live while delayed layout can still grow"
-    )
+    // Native answer layout and view identity are checked on the actual NSTextView.
     // Tombstone: streaming used to set allowsHitTesting(ready && !isStreaming),
     // so already-blue source/http links could not be clicked until the reply
     // finished. Keep hit-testing aligned with the visible WebView surface.
     expect(
         !chat.contains(".allowsHitTesting(finalizedRendererReady && !isStreaming)"),
         "streaming Agent Markdown must keep already-rendered source links clickable"
-    )
-    expect(
-        chat.contains(".environment(\\.agentChatLayoutWidth, max(panelWidth - 28, 1))"),
-        "selection-float Agent Markdown must receive its real panel width"
     )
     expect(
         richMarkdown.contains("navigationAction.navigationType == .linkActivated")

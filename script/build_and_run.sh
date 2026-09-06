@@ -159,6 +159,13 @@ if [[ "$CHECK_ONLY" != true ]]; then
   fi
 fi
 
+# SwiftPM's generated lookup targets command-line layouts. The native libraries
+# must also find their resource bundles in a signed macOS App's Contents/Resources.
+swift package resolve
+git apply --directory=.build/checkouts --check script/native-bundle-resources.patch 2>/dev/null && {
+  git apply --directory=.build/checkouts script/native-bundle-resources.patch
+} || git apply --directory=.build/checkouts --reverse --check script/native-bundle-resources.patch
+
 swift build -c "$BUILD_CONFIGURATION"
 
 if [[ "$CHECK_ONLY" != true ]]; then
@@ -167,6 +174,7 @@ if [[ "$CHECK_ONLY" != true ]]; then
   RESOURCE_BUNDLES=(
     "$BUILD_DIR/${PRODUCT_NAME}_${PRODUCT_NAME}.bundle"
     "$BUILD_DIR/${PRODUCT_NAME}_WeiBeiCore.bundle"
+    "$BUILD_DIR/SwiftMath_SwiftMath.bundle"
   )
 
   rm -rf "$APP_BUNDLE"
@@ -260,6 +268,12 @@ if [[ "$CHECK_ONLY" != true ]]; then
     fi
     cp "$legal_source" "$APP_RESOURCES/Legal/$(basename "$legal_source")"
   done
+  # SwiftPM dependencies can carry read-only resource modes into this copy.
+  chmod -R u+w "$APP_RESOURCES"
+  # Native chat uses only Latin Modern; keep its complete font/table and all licenses.
+  /usr/bin/find "$APP_RESOURCES/SwiftMath_SwiftMath.bundle/mathFonts.bundle" -type f \
+    \( -name '*.otf' -o -name '*.plist' -o -name 'math_table_to_plist.py' \) \
+    ! -name 'latinmodern-math.otf' ! -name 'latinmodern-math.plist' -delete
   # Clear inherited provenance/quarantine metadata before first launch.
   # Downloaded DMGs receive a fresh quarantine marker on the user's Mac.
   /usr/bin/xattr -cr "$APP_BUNDLE"

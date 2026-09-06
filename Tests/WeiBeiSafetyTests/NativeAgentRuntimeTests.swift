@@ -83,6 +83,65 @@ final class NativeAgentRuntimeTests: XCTestCase {
         XCTAssertTrue(result.contentBlocks.isEmpty)
     }
 
+    // A streamed figure keeps its place between text, including an update to the same figure.
+    func testVisualizationProgressAndFinalKeepTextOrderWhenFigureUpdates() async throws {
+        struct SequenceAdapter: NativeLLMAdapter {
+            var family: String { "mock" }
+            let steps: [[NativeStreamChunk]]
+            func stream(_ request: NativeLLMRequest) -> AsyncThrowingStream<NativeStreamChunk, Error> {
+                let step = request.messages.filter { $0.role == .tool }.count
+                return MockLLMAdapter(chunks: steps[min(step, steps.count - 1)]).stream(request)
+            }
+        }
+        actor ProgressCapture {
+            var values: [StudyAgentProgress] = []
+            func append(_ value: StudyAgentProgress) {
+                switch value {
+                case .text, .visualization: values.append(value)
+                default: break
+                }
+            }
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-figure-order-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let ledger = try NativeAgentLedger(fileURL: url)
+        let registry = NativeToolRegistry()
+        await NativeBuiltinTools.registerAll(into: registry, skillRoot: nil)
+        let capture = ProgressCapture()
+        let result = try await NativeAgentLoop().run(
+            request: testRequest(), ledger: ledger, registry: registry,
+            adapter: SequenceAdapter(steps: [
+                [.textDelta(index: 0, text: "before"),
+                 .toolCallDelta(index: 0, id: "v1", name: "weibei_visualize", argumentsDelta: #"{"id":"figure","spec":{"items":[{"value":1}]}}"#),
+                 .finish(reason: .toolCalls, replayState: nil)],
+                [.textDelta(index: 0, text: "after"),
+                 .toolCallDelta(index: 0, id: "v2", name: "weibei_visualize", argumentsDelta: #"{"id":"figure","spec":{"items":[{"value":2}]}}"#),
+                 .finish(reason: .toolCalls, replayState: nil)],
+                [.textDelta(index: 0, text: "tail"), .finish(reason: .stop, replayState: nil)]
+            ]), model: "mock", hostToolHandler: nil, systemPrompt: "test",
+            progress: { await capture.append($0) }
+        )
+        let progress = await capture.values
+        XCTAssertEqual(progress.count, 5)
+        guard progress.count == 5,
+              case let .visualization(first, firstBlocks) = progress[1],
+              case let .visualization(updated, updatedBlocks) = progress[3] else {
+            return XCTFail("Expected both figure publications between the text updates")
+        }
+        XCTAssertEqual(first.id, updated.id)
+        let updatedSpec = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(updated.specJSON.utf8)) as? [String: Any])
+        let items = try XCTUnwrap(updatedSpec["items"] as? [[String: Int]])
+        XCTAssertEqual(items.first?["value"], 2)
+        XCTAssertNotEqual(first.specJSON, updated.specJSON)
+        XCTAssertEqual(progress[0], .text("before", []))
+        XCTAssertEqual(firstBlocks, [.text("before"), .visualization(first)])
+        XCTAssertEqual(progress[2], .text("beforeafter", [.text("before"), .visualization(first), .text("after")]))
+        XCTAssertEqual(updatedBlocks, [.text("before"), .visualization(updated), .text("after")])
+        XCTAssertEqual(result.text, "beforeaftertail")
+        XCTAssertEqual(result.contentBlocks, [.text("before"), .visualization(updated), .text("aftertail")])
+        XCTAssertEqual(progress[4], .text(result.text, result.contentBlocks))
+    }
+
     func testContextCompactionProjectionUsesOnlyLatestCheckpointAndKeepsToolPairs() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("native-compaction-projection-\(UUID().uuidString).jsonl")

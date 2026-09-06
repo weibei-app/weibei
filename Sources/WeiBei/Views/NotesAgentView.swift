@@ -1144,6 +1144,7 @@ private enum AgentChatLayoutMetrics {
 }
 
 struct AgentPaneView: View {
+    @Environment(\.weiBeiTextScale) private var textScale
     @EnvironmentObject private var store: WorkspaceStore
     @EnvironmentObject private var paneState: WorkspacePaneState
     @EnvironmentObject private var interaction: WorkspaceInteractionState
@@ -1169,9 +1170,7 @@ struct AgentPaneView: View {
     /// Driven by the AppKit scroll probe — true when the viewport sits well
     /// above the newest message, revealing the jump-to-latest pill.
     @State private var showsJumpToLatest = false
-    /// Fold long history on open: only the newest page mounts KaTeX WKWebViews.
-    /// The limit only grows in-session. Offscreen unload (flag off by default)
-    /// may swap far rows for height placeholders — never switch this to LazyVStack.
+    /// History grows one page at a time; measured distant rows may release their views.
     @State private var agentVisibleMessageLimit = AgentPaneView.agentHistoryPageSize
     @State private var isRevealingEarlierAgentHistory = false
     @State private var isAgentHistoryRevealButtonHovered = false
@@ -1179,7 +1178,7 @@ struct AgentPaneView: View {
     /// reference type on purpose: per-event dictionary writes must not publish
     /// SwiftUI state; only the derived activeAgentRailID write renders.
     @State private var turnReadingPositions = AgentTurnReadingPositionModel()
-    /// Far-row IDs whose WKWebViews are height placeholders. Empty unless the
+    /// Far-row IDs represented by their measured row heights. Empty unless the
     /// unload flag is on; published only when the set changes, not per scroll pixel.
     @State private var offscreenPlaceholderIDs: Set<UUID> = []
 
@@ -1262,11 +1261,8 @@ struct AgentPaneView: View {
                         ScrollView(showsIndicators: true) {
                             // No scrollTargetLayout / scrollPosition / viewport minHeight
                             // feedback — those all thrash sizeThatFits on the chat stack.
-                            // Eager VStack (not LazyVStack): each finalized turn may host
-                            // Milkdown/KaTeX WKWebView. Lazy recycle remounted PlatformViews
-                            // while dragging the chat scroller and froze the UI (build 664).
-                            // Long histories fold behind a reveal button. Offscreen unload
-                            // (flag off by default) only swaps far rows for height placeholders.
+                            // Stable native rows; history expands on demand. Only measured
+                            // rows well beyond the viewport release their rendering views.
                             VStack(alignment: .leading, spacing: comfy ? 22 : 12) {
                                 if hiddenAgentHistoryCount > 0 {
                                     agentHistoryRevealButton(proxy: proxy)
@@ -1278,7 +1274,8 @@ struct AgentPaneView: View {
                                         placeholderHeight: AgentMessageViewportWindow.cachedHeight(
                                             message: message,
                                             layoutWidth: markdownContentWidth,
-                                            wideTypography: comfy
+                                            wideTypography: comfy,
+                                            textScale: textScale
                                         )
                                     ) {
                                         agentMessageRow(
@@ -1286,6 +1283,15 @@ struct AgentPaneView: View {
                                             contentWidth: contentWidth,
                                             wide: wide
                                         )
+                                        .background {
+                                            GeometryReader { geometry in
+                                                Color.clear
+                                                    .onAppear { cacheMessageHeight(geometry.size.height, message: message, width: markdownContentWidth, wide: comfy) }
+                                                    .onChange(of: geometry.size.height) { _, height in
+                                                        cacheMessageHeight(height, message: message, width: markdownContentWidth, wide: comfy)
+                                                    }
+                                            }
+                                        }
                                     }
                                     .background {
                                         if railTurnStartMessageIDs.contains(message.id) {
@@ -1320,7 +1326,6 @@ struct AgentPaneView: View {
                             .padding(.horizontal, wide ? 8 : 10)
                             .padding(.vertical, wide ? 14 : 10)
                             .environment(\.agentChatLayoutWidth, markdownContentWidth)
-                            .environment(\.agentChatPaneStructureTransitionActive, isPaneWidthMotionActive)
                             .padding(.top, store.messages.isEmpty ? 22 : 0)
                             // A held offscreen renderer may be wider than the pane,
                             // but it must never establish the scroll document width.
@@ -1798,13 +1803,23 @@ struct AgentPaneView: View {
         .accessibilityLabel(store.ui("回到最新消息", "Jump to latest"))
     }
 
+    private func cacheMessageHeight(_ height: CGFloat, message: AgentMessage, width: CGFloat, wide: Bool) {
+        AgentFinalizedMarkdownHeightCache.store(height, for: AgentFinalizedMarkdownHeightCache.cacheKey(
+            messageID: message.id, text: message.text,
+            widthBucket: AgentFinalizedMarkdownHeightCache.widthBucket(width),
+            wideTypography: wide, textScale: textScale
+        ))
+    }
+
     private func refreshOffscreenPlaceholders(viewportMinY: CGFloat, viewportHeight: CGFloat) {
+        let width = AgentChatLayoutMetrics.contentWidth(availableWidth: heldPaneLayoutWidth ?? agentPaneWidth, wide: usesWideChatLayout)
         let next = AgentMessageViewportWindow.placeholderIDs(
             enabled: AgentChatOffscreenUnloadFlag.isEnabled,
             messages: Array(visibleAgentMessages),
-            layoutWidth: agentPaneWidth,
+            layoutWidth: width,
             wideTypography: usesWideChatLayout
-                || agentPaneWidth >= AgentChatLayoutMetrics.wideTypographyMinContentWidth,
+                || width >= AgentChatLayoutMetrics.wideTypographyMinContentWidth,
+            textScale: textScale,
             viewportMinY: viewportMinY,
             viewportHeight: viewportHeight,
             spacing: usesWideChatLayout ? 22 : 12
@@ -3042,6 +3057,7 @@ private struct SelectionFloatChrome: ViewModifier {
 }
 
 private struct FloatingSelectionMessageBubble: View {
+    @EnvironmentObject private var store: WorkspaceStore
     var message: AgentMessage
     var text: String
     var isError = false
@@ -3069,14 +3085,15 @@ private struct FloatingSelectionMessageBubble: View {
 
     private var finalizedMessage: some View {
         AgentMessageMarkdownText(
-            text: text,
+            text: isUser ? text : AgentNativeMessageContent.markdown(text: text, blocks: message.contentBlocks),
             rendersRichMarkdown: !isUser,
             compact: true,
             isChatWideTypography: false,
-            usesFinalizedKaTeX: !isUser,
             messageID: message.id,
-            keepsMarkdownSurfaceMounted: !isUser && !isError,
-            isStreaming: isStreaming
+            sources: message.sources,
+            onActivateSource: { _ = store.openAgentReplySource($0) },
+            isStreaming: isStreaming,
+            contentBlocks: message.contentBlocks
         )
     }
 }
@@ -3095,9 +3112,7 @@ private struct FloatingSelectionMessageRow: View {
     var body: some View {
         let isStreaming = streaming.isDisplaying(message.id)
         let text = isStreaming ? streaming.text : store.agentDisplayText(for: message)
-        // Mount the bubble (and its markdown WebView) while the thinking
-        // overlay is still up, so the renderer's cold start runs in parallel
-        // with the wait for the first token.
+        // Keep the native body mounted while the first-token indicator is visible.
         ZStack(alignment: .topLeading) {
             FloatingSelectionMessageBubble(
                 message: message,
@@ -3132,8 +3147,7 @@ private struct FloatingSelectionMessageRow: View {
 @MainActor private let inertAgentStreamingState = AgentStreamingState()
 
 /// Bubble row for one assistant/user message. A single type across the
-/// generating → completed flip keeps the view identity (and the mounted
-/// markdown WKWebView) alive at completion.
+/// generating → completed flip keeps the native body alive at completion.
 private struct AgentMessageBubble: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.weibeiReduceMotion) private var reduceMotion
@@ -3162,7 +3176,7 @@ private struct AgentMessageBubble: View {
     }
 }
 
-private struct AgentBubble: View {
+struct AgentBubble: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openWindow) private var openSettingsWindow
     @Environment(\.weibeiReduceMotion) private var reduceMotion
@@ -3188,9 +3202,7 @@ private struct AgentBubble: View {
         .overlay(alignment: .bottomLeading) {
             if !isUser {
                 messageActionBar
-                    // Snug under the last rendered line: the WebView carries its
-                    // own bottom padding, so a large y-offset read as a detached
-                    // floating toolbar (user feedback 2026-08-25).
+                    // Keep actions close to the last rendered line.
                     .offset(x: 16, y: 2)
             }
         }
@@ -3329,20 +3341,6 @@ private struct AgentBubble: View {
             .contentShape(Rectangle())
     }
 
-    private var hasVisualBlocks: Bool {
-        message.contentBlocks.contains { block in
-            if case .text = block { return false }
-            return true
-        }
-    }
-
-    private var visualBlockCount: Int {
-        message.contentBlocks.count { block in
-            if case .text = block { return false }
-            return true
-        }
-    }
-
     private var regularMessageContent: some View {
         let answerText = liveStreamingText ?? store.agentDisplayText(for: message)
         let citationParse = AgentCitationParser.parse(answerText)
@@ -3361,40 +3359,22 @@ private struct AgentBubble: View {
         let isAwaitingFirstToken = message.completionState == .generating
             && answerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 8) {
-            // 流式期间 viz 块只以骨架占位,整篇回答保持单一渲染表面:
-            // 中途切到逐块布局会为每个文本块冷挂载一个新 WebView,
-            // 整篇从头重排(流式中肉眼可见的"刷新一下")。结构切换
-            // 推迟到定稿,与高度收敛同时发生。
-            if hasVisualBlocks, !isStreaming {
-                visualizedMessageFlow(
-                    fallbackText: citationParse.displayText,
-                    visibleText: answerText
+            ZStack(alignment: .topLeading) {
+                AgentMessageMarkdownText(
+                    text: AgentNativeMessageContent.markdown(text: answerText, blocks: message.contentBlocks),
+                    rendersRichMarkdown: true,
+                    isChatWideTypography: isChatWideTypography,
+                    messageID: message.id,
+                    sources: availableSources,
+                    onActivateSource: activateSource,
+                    isStreaming: isStreaming,
+                    contentBlocks: message.contentBlocks
                 )
-            } else {
-                // One surface owns the answer from question send through
-                // completion. The WebView mounts while the thinking overlay
-                // is still up, so its cold start runs in parallel with the
-                // wait for the first token instead of after it.
-                ZStack(alignment: .topLeading) {
-                    AgentMessageMarkdownText(
-                        text: citationParse.displayText,
-                        rendersRichMarkdown: true,
-                        isChatWideTypography: isChatWideTypography,
-                        usesFinalizedKaTeX: !isFailureMessage,
-                        messageID: message.id,
-                        keepsMarkdownSurfaceMounted: !isFailureMessage,
-                        isStreaming: isStreaming
+                if isAwaitingFirstToken {
+                    AgentThinkingIndicator(
+                        activityText: liveActivityText,
+                        chatWideTypography: isChatWideTypography
                     )
-                    if isAwaitingFirstToken {
-                        AgentThinkingIndicator(
-                            activityText: liveActivityText,
-                            chatWideTypography: isChatWideTypography
-                        )
-                    }
-                }
-                .onAppear { WeiBeiPerf.event("agent.mdrow", extra: "where=bubblePlain msg=\(message.id.uuidString.prefix(8)) streaming=\(isStreaming ? 1 : 0) textlen=\(citationParse.displayText.count) blocks=\(message.contentBlocks.count)") }
-                if hasVisualBlocks, isStreaming {
-                    AgentStreamingVisualizationScaffold(count: visualBlockCount)
                 }
             }
             if !availableSources.isEmpty {
@@ -3483,7 +3463,8 @@ private struct AgentBubble: View {
                     }
                 }
                 .padding(.top, 2)
-            } else if message.id == store.lastUsableAgentAnswerID {
+            } else if message.id == store.lastUsableAgentAnswerID,
+                      store.selectionContext != nil || store.canReplaceNoteSelection {
                 HStack(spacing: 6) {
                     if store.selectionContext != nil {
                         Button(store.ui("摘录", "Excerpt")) {
@@ -3540,77 +3521,11 @@ private struct AgentBubble: View {
         }
     }
 
-    @ViewBuilder
-    private func visualizedMessageFlow(
-        fallbackText: String,
-        visibleText: String
-    ) -> some View {
-        let contentBlocks = visibleContentBlocks(visibleText: visibleText)
-        let hasTextBlock = contentBlocks.contains {
-            if case let .text(text) = $0 {
-                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return false
-        }
-        if !hasTextBlock, !fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            AgentMessageMarkdownText(
-                text: fallbackText,
-                rendersRichMarkdown: true,
-                isChatWideTypography: isChatWideTypography,
-                usesFinalizedKaTeX: !isFailureMessage,
-                keepsMarkdownSurfaceMounted: !isFailureMessage,
-                isStreaming: isStreaming
-            )
-            .onAppear { WeiBeiPerf.event("agent.mdrow", extra: "where=vizFallback msg=\(message.id.uuidString.prefix(8)) textlen=\(fallbackText.count) blocks=\(message.contentBlocks.count)") }
-        }
-        ForEach(Array(contentBlocks.enumerated()), id: \.offset) { _, block in
-            switch block {
-            case let .text(text):
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    AgentMessageMarkdownText(
-                        text: AgentCitationParser.parse(text).displayText,
-                        rendersRichMarkdown: true,
-                        isChatWideTypography: isChatWideTypography,
-                        usesFinalizedKaTeX: !isFailureMessage,
-                        keepsMarkdownSurfaceMounted: !isFailureMessage,
-                        isStreaming: isStreaming
-                    )
-                    .onAppear { WeiBeiPerf.event("agent.mdrow", extra: "where=vizBlockText msg=\(message.id.uuidString.prefix(8)) textlen=\(text.count)") }
-                }
-            case let .visualization(fragment):
-                AgentVisualizationView(
-                    messageID: message.id,
-                    visualization: fragment
-                )
-                .padding(.vertical, 4)
-            case let .unavailable(type, rawJSON):
-                UnavailableAgentContentBlockView(type: type, rawJSON: rawJSON)
-                    .padding(.vertical, 4)
-            }
-        }
-    }
 
-    private func visibleContentBlocks(
-        visibleText: String
-    ) -> [AgentMessageContentBlock] {
-        guard isStreaming else { return message.contentBlocks }
-        var remaining = visibleText.count
-        return message.contentBlocks.map { block in
-            guard case let .text(text) = block else { return block }
-            let visibleCount = min(remaining, text.count)
-            remaining -= visibleCount
-            return .text(String(text.prefix(visibleCount)))
-        }
-    }
-
-    private var isUser: Bool {
-        message.role == .user
-    }
-
+    private var isUser: Bool { message.role == .user }
     private var isFailureMessage: Bool {
         message.role == .assistant && WorkspaceStore.isAgentFailureMessage(message.text)
     }
-
 }
 
 // MARK: - Agent citation tags (materials / learning / selection)
@@ -3953,9 +3868,9 @@ private struct AgentReplyActionCard: View {
     }
 }
 
-/// Memoizes the citation-parse + KaTeX-prepare pipeline for one message row.
+/// Memoizes display-only source and formula normalization for one message row.
 /// A reference type in @State so recomputation never invalidates the view.
-private final class AgentMessageMarkdownMemo {
+final class AgentMessageMarkdownMemo {
     private var key: String?
     private var display = ""
     private var finalized = ""
@@ -3963,22 +3878,16 @@ private final class AgentMessageMarkdownMemo {
     func outputs(
         text: String,
         sources: [AgentReplySource],
-        language: WeiBeiInterfaceLanguage,
-        streaming: Bool
+        language: WeiBeiInterfaceLanguage
     ) -> (display: String, finalized: String) {
-        let nextKey = "\(streaming ? 1 : 0)|\(language.rawValue)|\(sources.map(\.id.uuidString).joined(separator: ","))|\(text)"
+        let nextKey = "\(language.rawValue)|\(sources.map(\.id.uuidString).joined(separator: ","))|\(text)"
         if nextKey != key {
             let presentation = AgentReplySourceInlinePresentation(
                 text: text,
                 sources: sources,
                 language: language
             )
-            // While streaming, hold back the tail whose prepared form is not
-            // decidable yet, so parse/prepare never rewrite shown characters.
-            let source = streaming
-                ? AgentChatKaTeXMarkdown.withholdUndecidableStreamingTail(presentation.markdown)
-                : presentation.markdown
-            display = AgentCitationParser.parse(source).displayText
+            display = AgentCitationParser.parse(presentation.markdown).displayText
             finalized = AgentChatKaTeXMarkdown.prepare(display)
             key = nextKey
         }
@@ -3990,8 +3899,6 @@ private enum AgentCitationParser {
     /// Matches `[材料：…]` / `[学习记录：上次位置]` style Agent citation labels.
     private static let pattern = #"\[(材料|笔记|选区|学习记录|学习记忆|会话)[：:]\s*([^\]\n]{1,300})\]"#
     private static let regex = try? NSRegularExpression(pattern: pattern)
-    private static let collapsedSpaces = try? NSRegularExpression(pattern: #"[ \t]{2,}"#)
-    private static let collapsedBlankLines = try? NSRegularExpression(pattern: #"\n{3,}"#)
     /// Tail of an unterminated citation label (`[材料：书法笔` mid-stream). The
     /// kind tokens are listed with every proper prefix so the tail is withheld
     /// from the very first character that can only belong to a citation. The
@@ -4002,38 +3909,18 @@ private enum AgentCitationParser {
     private static let trailingOpenCitation = try? NSRegularExpression(
         pattern: #"\[(?:(?:材|材料|笔|笔记|选|选区|学|学习|学习记|学习记录|学习记忆|会|会话)[：:]?[^\]\n]*)?$"#
     )
-    private static let trailingBlankLines = try? NSRegularExpression(pattern: #"\n{3,}$"#)
-    private static let trailingSpaces = try? NSRegularExpression(pattern: #"[ \t]{2,}$"#)
 
     static func parse(_ text: String) -> (displayText: String, citations: [AgentCitation]) {
         guard let regex else {
             return (text, [])
         }
-        // Prefix-stability for streaming: the markdown WebView extends its
-        // streaming session by suffix, so the display text must only ever
-        // grow by appends. A citation label is therefore withheld while it is
-        // still unterminated (it sits at the tail then), and stripped whole
-        // once it closes — the visible text never sees it, and stripping it
-        // removes nothing that was already shown. Trailing blank-line/space
-        // runs are likewise clamped at the tail so the whole-document
-        // collapse below never rewrites already-shown characters. Without
-        // this, every closing citation rewrote the middle of the buffer and
-        // forced a whole-document re-parse (the visible completion flash).
+        // Hide an incomplete citation while it arrives. Whitespace belongs to
+        // the answer: collapsing it changes code indentation and blank lines.
         var working = text
         if let trailingOpenCitation,
            let match = trailingOpenCitation.firstMatch(in: working, range: fullNSRange(working)),
            let range = Range(match.range, in: working) {
             working = String(working[..<range.lowerBound])
-        }
-        if let trailingBlankLines,
-           let match = trailingBlankLines.firstMatch(in: working, range: fullNSRange(working)),
-           let range = Range(match.range, in: working) {
-            working.replaceSubrange(range, with: "\n\n")
-        }
-        if let trailingSpaces,
-           let match = trailingSpaces.firstMatch(in: working, range: fullNSRange(working)),
-           let range = Range(match.range, in: working) {
-            working.replaceSubrange(range, with: " ")
         }
         let nsRange = fullNSRange(working)
         var citations: [AgentCitation] = []
@@ -4058,15 +3945,7 @@ private enum AgentCitationParser {
                 )
             )
         }
-        var cleaned = regex.stringByReplacingMatches(in: working, options: [], range: nsRange, withTemplate: "")
-        if let collapsedSpaces {
-            cleaned = collapsedSpaces.stringByReplacingMatches(
-                in: cleaned, options: [], range: fullNSRange(cleaned), withTemplate: " ")
-        }
-        if let collapsedBlankLines {
-            cleaned = collapsedBlankLines.stringByReplacingMatches(
-                in: cleaned, options: [], range: fullNSRange(cleaned), withTemplate: "\n\n")
-        }
+        let cleaned = regex.stringByReplacingMatches(in: working, options: [], range: nsRange, withTemplate: "")
         return (cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? working : cleaned, citations)
     }
 
@@ -4436,19 +4315,10 @@ private struct AgentChatLayoutWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
-private struct AgentChatPaneStructureTransitionKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
 private extension EnvironmentValues {
     var agentChatLayoutWidth: CGFloat {
         get { self[AgentChatLayoutWidthKey.self] }
         set { self[AgentChatLayoutWidthKey.self] = newValue }
-    }
-
-    var agentChatPaneStructureTransitionActive: Bool {
-        get { self[AgentChatPaneStructureTransitionKey.self] }
-        set { self[AgentChatPaneStructureTransitionKey.self] = newValue }
     }
 }
 
@@ -4460,103 +4330,7 @@ private struct AgentScrollMetrics: Equatable {
     let isScrollingTowardTop: Bool
 }
 
-
-/// Reports whether one finalized Markdown row intersects the chat viewport.
-/// The boolean changes only at viewport boundaries, keeping offscreen WebKit
-/// frames out of pane-animation reflow without putting SwiftUI geometry inside
-/// the scroll stack.
-private struct AgentScrollViewportVisibilityProbe: NSViewRepresentable {
-    var onChange: (Bool) -> Void
-
-    func makeNSView(context: Context) -> ProbeView {
-        let view = ProbeView()
-        view.onChange = onChange
-        return view
-    }
-
-    func updateNSView(_ nsView: ProbeView, context: Context) {
-        nsView.onChange = onChange
-        nsView.ensureObserversInstalled()
-        nsView.report()
-    }
-
-    final class ProbeView: NSView {
-        var onChange: ((Bool) -> Void)?
-        private var observers: [NSObjectProtocol] = []
-        private var lastReported: Bool?
-        private weak var observedClipView: NSClipView?
-
-        override func layout() {
-            super.layout()
-            // A representable can enter the SwiftUI hierarchy before its outer
-            // ScrollView exists. The first real layout is the reliable point to
-            // attach, so the first divider drag never uses stale visibility.
-            ensureObserversInstalled()
-            report()
-        }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            ensureObserversInstalled()
-        }
-
-        override func viewDidMoveToSuperview() {
-            super.viewDidMoveToSuperview()
-            ensureObserversInstalled()
-        }
-
-        fileprivate func report() {
-            // Before AppKit attaches and lays out the row, visibility is unknown.
-            // Reporting false here held the old Markdown width on the first drag,
-            // so a fast shrink clipped content until the divider was released.
-            guard let clipView = enclosingScrollView?.contentView,
-                  window != nil,
-                  bounds.width > 1,
-                  bounds.height > 1 else { return }
-            let frameInClip = convert(bounds, to: clipView)
-            let intersection = frameInClip.intersection(clipView.bounds)
-            let visible = !intersection.isNull
-                && intersection.width > 1
-                && intersection.height > 1
-            guard visible != lastReported else { return }
-            lastReported = visible
-            DispatchQueue.main.async { [weak self] in
-                self?.onChange?(visible)
-            }
-        }
-
-        fileprivate func ensureObserversInstalled() {
-            guard let clipView = enclosingScrollView?.contentView else { return }
-            guard observedClipView !== clipView else { return }
-            observers.forEach(NotificationCenter.default.removeObserver)
-            observers.removeAll()
-            observedClipView = clipView
-            clipView.postsBoundsChangedNotifications = true
-            clipView.postsFrameChangedNotifications = true
-            let center = NotificationCenter.default
-            observers.append(center.addObserver(
-                forName: NSView.boundsDidChangeNotification,
-                object: clipView,
-                queue: .main
-            ) { [weak self] _ in self?.report() })
-            observers.append(center.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: clipView,
-                queue: .main
-            ) { [weak self] _ in self?.report() })
-            report()
-        }
-
-        deinit {
-            observers.forEach(NotificationCenter.default.removeObserver)
-        }
-    }
-}
-
-/// AppKit-side scroll probe: observes the enclosing NSScrollView's clip-view
-/// bounds and reports both history boundaries plus explicit live-scroll intent.
-/// Deliberately NOT SwiftUI geometry — GeometryReader/preference feedback on
-/// the chat scroll view re-entered sizeThatFits storms (contract-banned).
+/// Reads the enclosing scroll view's position and user scroll direction.
 private struct AgentScrollDistanceProbe: NSViewRepresentable {
     var onChange: (AgentScrollMetrics) -> Void
 
@@ -4673,431 +4447,135 @@ private struct AgentScrollDistanceProbe: NSViewRepresentable {
     }
 }
 
-/// Agent chat markdown — shared by immersive conversation and selection float.
-/// - Finalized assistant turns: full `MarkdownPreviewView` with width-aware frozen height.
-/// - User turns, failures, and renderer fallback: native `AttributedString`.
+/// Assistant text shares one native document across live, saved and floating conversations.
 private struct AgentMessageMarkdownText: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.agentChatLayoutWidth) private var layoutWidth
-    @Environment(\.agentChatPaneStructureTransitionActive) private var paneStructureTransitionActive
+    @Environment(\.weiBeiTextScale) private var textScale
     var text: String
     var rendersRichMarkdown: Bool
-    /// Selection-float / narrow surfaces: smaller type, still fills available width.
-    var compact: Bool = false
-    /// Immersive conversation typography tier for finalized WebKit markdown.
-    var isChatWideTypography: Bool = false
-    /// Completed assistant turns only — never streaming, user, or failure bubbles.
-    var usesFinalizedKaTeX: Bool = false
+    var compact = false
+    var isChatWideTypography = false
     var messageID: UUID? = nil
     var sources: [AgentReplySource] = []
     var onActivateSource: (AgentReplySource) -> Void = { _ in }
-    /// Assistant replies keep this Web renderer mounted from the first streamed text
-    /// through the completed message instead of handing off to a second view.
-    var keepsMarkdownSurfaceMounted = false
     var isStreaming = false
-    @ObservedObject private var bootQueueModel = AgentChatMarkdownBootQueueModel.shared
-    @State private var fallbackBootID = UUID()
-    /// Cold finalized rows wait for a shared boot slot (visible rows first)
-    /// before mounting their WebKit renderer; streamed rows never queue.
-    @State private var rendererSurfaceMounted = false
-    @State private var finalizedRendererReady = false
-    @State private var finalizedRendererFailed = false
-    @State private var awaitsFinalizedRendererReady = false
-    @State private var finalizedHeightSettling = false
-    @State private var finalizedHeightSettleGeneration = 0
-    /// nil = newly mounted and not classified yet. Treat unknown as visible so
-    /// an on-screen row never flashes the held offscreen width before the probe.
-    @State private var isInScrollViewport: Bool?
+    var contentBlocks: [AgentMessageContentBlock] = []
     @State private var expandedSourceURL: String?
+    @State private var markdownMemo = AgentMessageMarkdownMemo()
+    @State private var imageHandler = MarkdownImageSchemeHandler()
+    @State private var measuredHeight: CGFloat?
 
     private var sourcePresentation: AgentReplySourceInlinePresentation {
-        AgentReplySourceInlinePresentation(
-            text: text,
-            sources: sources,
-            language: store.interfaceLanguage
-        )
+        AgentReplySourceInlinePresentation(text: text, sources: sources, language: store.interfaceLanguage)
     }
 
-    /// One regex pipeline per input change, not per property access (~30Hz streaming).
-    @State private var markdownMemo = AgentMessageMarkdownMemo()
-
-    private var finalizedMarkdown: String {
-        markdownMemo.outputs(
-            text: text,
-            sources: sources,
-            language: store.interfaceLanguage,
-            streaming: isStreaming
-        ).finalized
-    }
-
-    private var displayMarkdown: String {
-        markdownMemo.outputs(
-            text: text,
-            sources: sources,
-            language: store.interfaceLanguage,
-            streaming: isStreaming
-        ).display
-    }
-
-    /// Coarse cache bucket — also drives MarkdownPreviewView freeze width.
-    private var layoutWidthBucket: Int {
-        AgentFinalizedMarkdownHeightCache.widthBucket(layoutWidth)
-    }
-
-    private var shouldUseFinalizedMarkdown: Bool {
-        usesFinalizedKaTeX && rendersRichMarkdown
-            && (keepsMarkdownSurfaceMounted
-                || AgentChatKaTeXMarkdown.requiresWebRenderer(finalizedMarkdown))
-    }
-
-    private var heldOffscreenRendererWidth: CGFloat? {
-        if paneStructureTransitionActive && isInScrollViewport == false {
-            return max(layoutWidth, 1)
-        }
-        return nil
+    private var preparedMarkdown: String {
+        markdownMemo.outputs(text: text, sources: sources, language: store.interfaceLanguage).finalized
     }
 
     var body: some View {
         Group {
-            if shouldUseFinalizedMarkdown {
-                finalizedMarkdownBody
+            if rendersRichMarkdown {
+                NativeChatMarkdownView(
+                    markdown: preparedMarkdown,
+                    messageID: messageID,
+                    fontSize: (isChatWideTypography && !compact ? 16 : 14) * textScale,
+                    isDark: store.appearanceMode.isDark,
+                    appearanceKey: store.appearanceMode.rawValue,
+                    interfaceLanguage: store.interfaceLanguage,
+                    onOpenURL: openLink,
+                    onHeightChange: { height in
+                        measuredHeight = height
+                    },
+                    visualizationView: { identifier, width, onHeight in
+                        guard let messageID else { return nil }
+                        let host = NSHostingView(rootView: AgentNativeContentAttachment(
+                            messageID: messageID,
+                            identifier: identifier.removingPercentEncoding ?? identifier,
+                            initialBlocks: contentBlocks,
+                            onHeight: onHeight
+                        ).environmentObject(store).environment(\.weiBeiTextScale, textScale))
+                        host.sizingOptions = []
+                        host.frame.size = NSSize(width: width, height: 160)
+                        return host
+                    },
+                    imageLoader: { source, completion in
+                        imageHandler.update(
+                            markdownBaseURLString: store.currentMarkdownBaseURL?.absoluteString ?? "",
+                            attachmentDirectory: store.currentAttachmentDirectory,
+                            appearanceMode: store.appearanceMode,
+                            interfaceLanguage: store.interfaceLanguage
+                        )
+                        imageHandler.loadImage(source: source, completion: completion)
+                    }
+                )
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: measuredHeight ?? initialBodyHeight, alignment: .leading)
             } else {
-                nativeBody
+                Text((try? AttributedString(markdown: text)) ?? AttributedString(text))
+                    .weiBeiText(compact ? 13.2 : 14.5)
+                    .lineSpacing(compact ? 4.2 : 4.5)
+                    .foregroundStyle(WeiBeiTheme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.disabled)
             }
         }
         .modifier(AgentMessageTextWidthModifier(fillsReadingColumn: rendersRichMarkdown || compact))
-        .environment(\.openURL, OpenURLAction { url in
-            handleSourceURL(url) ? .handled : .systemAction
-        })
-        .popover(
-            isPresented: Binding(
-                // Only the selected URL should drive presentation. Evaluating
-                // expandedSources here rebuilt source presentations for every
-                // message on every WorkspaceStore publish (send-path freeze sample).
-                get: { expandedSourceURL != nil },
-                set: { if !$0 { expandedSourceURL = nil } }
-            ),
-            arrowEdge: .bottom
-        ) {
+        .popover(isPresented: Binding(
+            get: { expandedSourceURL != nil },
+            set: { if !$0 { expandedSourceURL = nil } }
+        ), arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(expandedSources) { source in
                     Button {
                         expandedSourceURL = nil
                         onActivateSource(source)
-                    } label: {
-                        AgentReplySourceDetail(source: source)
-                    }
+                    } label: { AgentReplySourceDetail(source: source) }
                     .buttonStyle(.plain)
-                    if source.id != expandedSources.last?.id {
-                        Rectangle()
-                            .fill(WeiBeiTheme.hairline.opacity(0.42))
-                            .frame(height: 1)
-                    }
                 }
             }
             .frame(width: 340)
             .padding(.vertical, 6)
         }
-        .help(sourceHelp)
-        .onAppear {
-            if isStreaming {
-                // The streaming condition mounts this surface before onAppear;
-                // retain that same instance across the first completed body.
-                rendererSurfaceMounted = true
-            } else {
-                updateColdBootSlotRequest()
-            }
-        }
-        .onChange(of: isInScrollViewport) { _, _ in
-            updateColdBootSlotRequest()
-        }
-        .onChange(of: bootQueueModel.admittedIDs) { _, admitted in
-            if admitted.contains(bootSlotID) { rendererSurfaceMounted = true }
-        }
-        .onDisappear(perform: releaseBootSlot)
-        .onChange(of: finalizedMarkdown) { _, _ in
-            // A live answer owns one renderer. Preserve its visible identity
-            // while the same WebView accepts the next snapshot or final text.
-            if !keepsMarkdownSurfaceMounted {
-                finalizedHeightSettleGeneration &+= 1
-                finalizedHeightSettling = false
-                finalizedRendererReady = false
-                finalizedRendererFailed = false
-                awaitsFinalizedRendererReady = false
-            }
-        }
-        .onChange(of: isStreaming) { wasStreaming, isStreaming in
-            guard wasStreaming, !isStreaming,
-                  keepsMarkdownSurfaceMounted else { return }
-            // The live surface stays mounted; it never needed a boot slot.
-            rendererSurfaceMounted = true
-            // The streaming measurement only proves the previous DOM was ready.
-            // Keep this WebView mounted — and visible, since it still shows the
-            // streamed answer — but wait for the finalized snapshot's own
-            // measurement before accepting height updates again.
-            finalizedRendererReady = false
-            finalizedRendererFailed = false
-            awaitsFinalizedRendererReady = true
+        .onDisappear {
+            imageHandler.invalidate()
+            imageHandler = MarkdownImageSchemeHandler()
         }
     }
 
-    private var cacheKey: String {
-        AgentFinalizedMarkdownHeightCache.cacheKey(
-            messageID: messageID,
-            text: finalizedMarkdown,
-            widthBucket: layoutWidthBucket,
-            wideTypography: isChatWideTypography
+    private var initialBodyHeight: CGFloat {
+        guard !compact, !isStreaming, sources.isEmpty else { return 1 }
+        let key = AgentFinalizedMarkdownHeightCache.cacheKey(
+            messageID: messageID, text: text,
+            widthBucket: AgentFinalizedMarkdownHeightCache.widthBucket(layoutWidth),
+            wideTypography: isChatWideTypography, textScale: textScale
         )
-    }
-
-    private var bootSlotID: UUID {
-        messageID ?? fallbackBootID
-    }
-
-    /// Opening a historical Chat eagerly mounts up to a page of finalized rows,
-    /// each cold-booting its own WKWebView. Requesting a shared boot slot
-    /// (visible rows first, bounded concurrency) staggers those cold starts so
-    /// on-screen rows stop waiting behind a whole-conversation boot storm.
-    private func updateColdBootSlotRequest() {
-        guard shouldUseFinalizedMarkdown, !isStreaming, !rendererSurfaceMounted else { return }
-        bootQueueModel.queue.requestBootSlot(id: bootSlotID, isInViewport: isInScrollViewport)
-        if bootQueueModel.queue.isAdmitted(bootSlotID) {
-            rendererSurfaceMounted = true
-        }
-    }
-
-    private func releaseBootSlot() {
-        bootQueueModel.queue.release(bootSlotID)
-    }
-
-    private var cachedFinalizedHeight: CGFloat? {
-        AgentFinalizedMarkdownHeightCache.height(for: cacheKey)
-    }
-
-    @ViewBuilder
-    private var finalizedMarkdownBody: some View {
-        // The mature Markdown renderer handles paragraphs, headings, lists, tables,
-        // fenced code and KaTeX through one path. Native text stays visible until
-        // the first valid measurement and returns immediately if WebKit fails.
-        // Settled/offscreen height freezes after a real measure; an on-screen
-        // row stays live while its pane is resizing so new wraps are not clipped.
-        // The 24pt-bucket cache supplies a first-frame seed, never readiness.
-        // NEVER wire onContentHeightChange to scrollAgentToBottom.
-        ZStack(alignment: .topLeading) {
-            if !finalizedRendererFailed && (isStreaming || rendererSurfaceMounted) {
-                MarkdownPreviewView(
-                    markdown: finalizedMarkdown,
-                    markdownBaseURL: store.currentMarkdownBaseURL,
-                    appearanceMode: store.appearanceMode,
-                    interfaceLanguage: store.interfaceLanguage,
-                    compact: true,
-                    fitsContentHeight: true,
-                    // Freezing is only a recycle optimization for offscreen rows.
-                    // A visible answer stays authoritative so delayed list, font,
-                    // image, or KaTeX growth can never be clipped by an old frame.
-                    freezeHeightAfterMeasure: !isStreaming
-                        && (!paneStructureTransitionActive || isInScrollViewport == false)
-                        && isInScrollViewport == false,
-                    allowsHeightFreeze: !finalizedHeightSettling,
-                    seedContentHeight: isStreaming ? nil : cachedFinalizedHeight,
-                    layoutWidthKey: layoutWidthBucket,
-                    isChatWideTypography: isChatWideTypography,
-                    preservesHeightAcrossMarkdownChanges: keepsMarkdownSurfaceMounted,
-                    streamsMarkdownUpdates: isStreaming,
-                    onWikiLink: { title in store.openOrCreateWikiNote(title: title) },
-                    onSourceReference: { reference in
-                        if let url = URL(string: reference),
-                           handleSourceURL(url) {
-                            return
-                        }
-                        store.openSourceReference(reference)
-                    },
-                    onRenderReady: {
-                        finalizedRendererFailed = false
-                    },
-                    onFinalizedSnapshotReady: { height in
-                        guard !isStreaming else { return }
-                        releaseBootSlot()
-                        awaitsFinalizedRendererReady = false
-                        finalizedRendererFailed = false
-                        if !paneStructureTransitionActive {
-                            AgentFinalizedMarkdownHeightCache.store(
-                                height,
-                                for: cacheKey
-                            )
-                        }
-                        finalizedRendererReady = true
-                        finalizedHeightSettleGeneration &+= 1
-                        let settleGeneration = finalizedHeightSettleGeneration
-                        finalizedHeightSettling = true
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 650_000_000)
-                            guard settleGeneration
-                                    == finalizedHeightSettleGeneration else {
-                                return
-                            }
-                            finalizedHeightSettling = false
-                        }
-                    },
-                    onRenderFailure: {
-                        releaseBootSlot()
-                        finalizedHeightSettleGeneration &+= 1
-                        finalizedHeightSettling = false
-                        awaitsFinalizedRendererReady = false
-                        finalizedRendererReady = false
-                        finalizedRendererFailed = true
-                    },
-                    onMeasuredHeight: { height in
-                        if !awaitsFinalizedRendererReady,
-                           !isStreaming,
-                           !paneStructureTransitionActive {
-                            AgentFinalizedMarkdownHeightCache.store(height, for: cacheKey)
-                        }
-                        if !awaitsFinalizedRendererReady,
-                           !finalizedRendererReady {
-                            releaseBootSlot()
-                            finalizedRendererReady = true
-                        }
-                    }
-                )
-                // Keep an offscreen WebView at its settled width without letting
-                // that fixed child establish the scroll document's minimum width.
-                .frame(width: heldOffscreenRendererWidth, alignment: .leading)
-                // The outer row always accepts the live parent proposal. Visible
-                // renderers use it directly; held offscreen renderers are clipped.
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                // Match opacity: the live WebView is the answer, including
-                // mid-stream. Already-rendered source/http links must open
-                // without waiting for the whole reply. Cold 0.01-opacity
-                // boots stay inert so they cannot steal scroll.
-                .allowsHitTesting(isStreaming || finalizedRendererReady
-                    || awaitsFinalizedRendererReady)
-                .accessibilityHidden(!(isStreaming || finalizedRendererReady || awaitsFinalizedRendererReady))
-                // Handoff (awaitsFinalizedRendererReady) keeps the live WebView
-                // fully visible: it already shows the streamed answer, and
-                // hiding it behind native text would flash at completion.
-                .opacity(isStreaming || finalizedRendererReady
-                    || awaitsFinalizedRendererReady ? 1 : 0.01)
-                .zIndex(0)
-            }
-            // Never flash native/raw Markdown over a live stream or over the
-            // streamed→finalized handoff. Cold-mounted rows show a content-free
-            // skeleton until this WebView's first measurement — any real-content
-            // preview used a typography that never matched the final render and
-            // the swap read as a glitch, not as loading.
-            if !finalizedRendererReady
-                && !awaitsFinalizedRendererReady
-                && (!isStreaming
-                    || !keepsMarkdownSurfaceMounted
-                    || finalizedRendererFailed) {
-                coldPlaceholderBody
-                    .background(WeiBeiTheme.paper)
-                    .allowsHitTesting(false)
-                    .zIndex(1)
-            }
-        }
-        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .animation(WeiBeiMotion.micro, value: finalizedRendererReady)
-        .clipped()
-        .background {
-            AgentScrollViewportVisibilityProbe { visible in
-                if isInScrollViewport != Optional(visible) {
-                    isInScrollViewport = visible
-                }
-            }
-        }
-    }
-
-    /// Interim surface for rows whose rich renderer is not authoritative yet.
-    /// A cold finalized row shows a quiet skeleton — the native text underneath
-    /// stays mounted invisibly so it reserves an approximate height and the
-    /// first real measurement barely moves the row. Live-streaming and failed
-    /// rows show structured native text at full opacity: there the native
-    /// surface IS the content.
-    @ViewBuilder
-    private var coldPlaceholderBody: some View {
-        if finalizedRendererFailed || isStreaming {
-            if rendersRichMarkdown {
-                AgentMarkdownBlockFallback(
-                    markdown: finalizedMarkdown,
-                    compact: compact
-                )
-            } else {
-                nativeBody
-            }
-        } else {
-            nativeBody
-                .opacity(0.001)
-                .overlay(alignment: .topLeading) {
-                    AgentMarkdownSkeleton(compact: compact)
-                        .padding(.top, 2)
-                }
-                .accessibilityHidden(true)
-        }
-    }
-
-    private var nativeBody: some View {
-        Text(renderedText)
-            .weiBeiText(compact ? 13.2 : (rendersRichMarkdown ? 15 : 14.5))
-            .lineSpacing(compact ? 4.2 : (rendersRichMarkdown ? 5.5 : 4.5))
-            .foregroundStyle(WeiBeiTheme.ink)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            // NEVER enable SwiftUI textSelection here. Sample 2026-08-01: SelectionOverlay
-            // updateNSView + LazyVStack sizeThatFits spun the main thread at 100% after a
-            // few HTML reader scrolls (store publish fanout). KaTeX WKWebView still selects.
-            .textSelection(.disabled)
-    }
-
-    private var renderedText: AttributedString {
-        // Streaming / no-math path: Unicode math readability without WKWebView.
-        let display = AgentDisplayText.normalizedInlineMath(displayMarkdown)
-        var attributed = (try? AttributedString(markdown: display))
-            ?? AttributedString(display)
-        let sourceRanges = attributed.runs.compactMap { run -> Range<AttributedString.Index>? in
-            guard run.link.map(sourcePresentation.contains) == true else { return nil }
-            return run.range
-        }
-        for range in sourceRanges {
-            attributed[range].font = .system(size: compact ? 10.5 : 11, weight: .semibold)
-            attributed[range].foregroundColor = WeiBeiTheme.cinnabar
-            attributed[range].backgroundColor = WeiBeiTheme.paperInset.opacity(0.64)
-            attributed[range].underlineStyle = nil
-        }
-        return attributed
+        return max(1, (AgentFinalizedMarkdownHeightCache.height(for: key) ?? 21) - 20)
     }
 
     private var expandedSources: [AgentReplySource] {
         expandedSourceURL.flatMap(sourcePresentation.additionalSources(for:)) ?? []
     }
 
-    private var sourceHelp: String {
-        sources.map { source in
-            [
-                source.title,
-                source.positionLabel(language: store.interfaceLanguage),
-                source.excerpt.trimmingCharacters(in: .whitespacesAndNewlines),
-            ]
-            .compactMap { value in
-                guard let value, !value.isEmpty else { return nil }
-                return value
-            }
-            .joined(separator: " · ")
-        }
-        .joined(separator: "\n")
-    }
-
-    @discardableResult
-    private func handleSourceURL(_ url: URL) -> Bool {
+    private func openLink(_ url: URL) {
         if let source = sourcePresentation.source(for: url) {
             onActivateSource(source)
-            return true
-        }
-        if !sourcePresentation.additionalSources(for: url).isEmpty {
+        } else if !sourcePresentation.additionalSources(for: url).isEmpty {
             expandedSourceURL = url.absoluteString
-            return true
+        } else if url.scheme == "weibei-note" {
+            store.openOrCreateWikiNote(title: String(url.absoluteString.dropFirst("weibei-note:".count)).removingPercentEncoding ?? url.path)
+        } else if url.scheme == "weibei-source" {
+            store.openSourceReference(String(url.absoluteString.dropFirst("weibei-source:".count)).removingPercentEncoding ?? url.path)
+        } else if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+            NSWorkspace.shared.open(url)
+        } else {
+            imageHandler.update(markdownBaseURLString: store.currentMarkdownBaseURL?.absoluteString ?? "",
+                attachmentDirectory: store.currentAttachmentDirectory,
+                appearanceMode: store.appearanceMode, interfaceLanguage: store.interfaceLanguage)
+            if let imageURL = imageHandler.validatedLocalImageURL(source: url.absoluteString) {
+                NSWorkspace.shared.open(imageURL)
+            }
         }
-        return false
     }
 }
 
@@ -5166,11 +4644,7 @@ private struct AgentLiveResponse: View {
 private struct AgentThinkingIndicator: View {
     @EnvironmentObject private var store: WorkspaceStore
     var activityText: String?
-    /// Match the answer text that follows this indicator in the same surface:
-    /// every hosting surface renders the reply in a compact Milkdown preview
-    /// (14pt base), lifted to 16pt only by the chat-wide attribute — the
-    /// selection float and narrow conversation columns both stay at 14pt,
-    /// which is exactly what the `.ProseMirror` CSS shows next to this word.
+    /// Match the native answer text in wide and compact conversation surfaces.
     var chatWideTypography = false
     var compact = false
     @Environment(\.weibeiReduceMotion) private var reduceMotion
@@ -5183,13 +4657,7 @@ private struct AgentThinkingIndicator: View {
 
     private static let minimumStatusHold: TimeInterval = 0.6
 
-    /// Answer-text bases in pt, mirroring `.ProseMirror` in Editor/index.html.
-    /// The reply WebView is always a compact preview (14), raised to 16 by
-    /// `data-weibei-chat-wide`; the 17 non-compact base never applies here —
-    /// using it made the word read 3pt larger than the reply in narrow
-    /// conversation columns once the 520pt window minimum made those common.
-    /// ⌘± changes the text tier, so the status word must scale with it
-    /// exactly like the reply text.
+    /// Same font bases and user text scale as the answer body.
     private static let chatWideFontSize: CGFloat = 16
     private static let compactFontSize: CGFloat = 14
     private var baseFontSize: CGFloat {
@@ -5797,8 +5265,6 @@ private struct AgentStreamingResponse: View {
                 rendersRichMarkdown: true,
                 compact: compact,
                 isChatWideTypography: isChatWideTypography,
-                usesFinalizedKaTeX: true,
-                keepsMarkdownSurfaceMounted: true,
                 isStreaming: true
             )
         }
