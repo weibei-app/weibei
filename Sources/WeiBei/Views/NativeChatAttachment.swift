@@ -73,6 +73,7 @@ final class NativeChatTextAttachment: NSTextAttachment {
                                textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
         let provider = NativeChatAttachmentProvider(textAttachment: self, parentView: parentView,
             textLayoutManager: textContainer?.textLayoutManager, location: location)
+        provider.tracksTextAttachmentViewBounds = true
         providers.add(provider)
         return provider
     }
@@ -83,7 +84,6 @@ private final class NativeChatAttachmentProvider: NSTextAttachmentViewProvider {
     override func loadView() {
         guard let attachment = textAttachment as? NativeChatTextAttachment else { return }
         view = NativeChatAttachmentView(attachment)
-        tracksTextAttachmentViewBounds = true
     }
 
     override func attachmentBounds(for attributes: [NSAttributedString.Key: Any], location: any NSTextLocation,

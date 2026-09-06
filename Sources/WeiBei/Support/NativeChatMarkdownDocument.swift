@@ -129,6 +129,18 @@ enum NativeChatMarkdownParser {
         var calloutIndex = 0
         var interfaceLanguage: WeiBeiInterfaceLanguage = .chinese
         private static let sourceReference = try! NSRegularExpression(pattern: #"(?:^|[\s`])((?:来源：|Source:)[^`\n]+)"#)
+        // Match the editor's emphasis boundary rules for Chinese punctuation.
+        private static let emphasisRules: [(NSRegularExpression, String)] = [
+            (#"([\p{L}\p{N}])(\*\*|__)(?=\p{P})"#, "$1 $2"),
+            (#"(^|[\s\p{P}])(\*\*|__)([^\s*_\n][^*_\n]*\p{P})\2(?=[^\s\p{P}])"#, "$1$2$3$2 "),
+            (#"(^|[\s\p{P}])(\*\*|__)([^\s*_\n](?:[^*_\n]*?\S)?)[ \t]+\2(?=\S)"#, "$1$2$3$2")
+        ].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
+
+        private func normalizeEmphasis(_ source: String) -> String {
+            Self.emphasisRules.reduce(source) { text, rule in
+                rule.0.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: text.utf16.count), withTemplate: rule.1)
+            }
+        }
         mutating func append(_ text: String, _ style: NativeChatMarkdownStyle, attachment: NativeChatAttachmentDescriptor? = nil) {
             guard !text.isEmpty else { return }
             runs.append(.init(text: text, style: style, attachment: attachment))
@@ -269,11 +281,22 @@ enum NativeChatMarkdownParser {
                 } else { for child in node.children { protect(child) } }
             }
             protect(Document(parsing: source))
+            let original = source as NSString
+            var normalized = "", previousEnd = 0
+            var normalizedCodeRanges: [NSRange] = []
+            for range in protected.sorted(by: { $0.location < $1.location }) {
+                normalized += normalizeEmphasis(original.substring(with: NSRange(location: previousEnd, length: range.location - previousEnd)))
+                normalizedCodeRanges.append(NSRange(location: normalized.utf16.count, length: range.length))
+                normalized += original.substring(with: range)
+                previousEnd = NSMaxRange(range)
+            }
+            normalized += normalizeEmphasis(original.substring(from: previousEnd))
+            protected = normalizedCodeRanges
             let pattern = #"(?s)(?<!\\)\$\$(.+?)\$\$|(?<!\\)\\\[(.+?)\\\]|(?<!\\)\\\((.+?)\\\)|(?<!\\)\$(?!\s)([^$\n]+?)\$(?!\d)|(?<!\\)(!?)\[\[([^\]\n]+)\]\]|(?<!\\)==([^=\n]+)==|(?<!\\)\^\[([^\]\n]+)\]|(?m:^[ \t]*\[[ \t]*\n?([^\]]*?\\[A-Za-z]+[^\]]*?)\][ \t]*$)"#
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return source }
-            let ns = source as NSString
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return normalized }
+            let ns = normalized as NSString
             var output = "", cursor = 0
-            for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            for match in regex.matches(in: normalized, range: NSRange(location: 0, length: ns.length)) {
                 output += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
                 let raw = ns.substring(with: match.range)
                 func capture(_ index: Int) -> String? { match.range(at: index).location == NSNotFound ? nil : ns.substring(with: match.range(at: index)) }

@@ -44,10 +44,12 @@ final class NativeChatMarkdownTests: XCTestCase {
         # 标题
         中文 **重点**，[[笔记|别名]]，![[嵌入笔记]]，==标注==，^[补充]，$x^2$。
 
+        **结尾。**继续，已有**“引用”**后文，**范围更广 **，后文。
+
         来源：资料名
 
         ```swift
-        let value = "$x$ and [[literal]]"
+        let value = "$x$ and [[literal]] **结尾。**继续"
         ```
 
         | 左 | 右 |
@@ -59,12 +61,15 @@ final class NativeChatMarkdownTests: XCTestCase {
         """
         let document = NativeChatMarkdownParser.parse(source)
         XCTAssertTrue(document.runs.contains { $0.style.bold && $0.text == "重点" })
+        for text in ["结尾。", "“引用”", "范围更广"] {
+            XCTAssertTrue(document.runs.contains { $0.style.bold && $0.text == text }, "Missing bold span: \(text); parsed: \(document.runs.filter { $0.style.bold }.map(\.text))")
+        }
         XCTAssertTrue(document.runs.contains { $0.style.link?.hasPrefix("weibei-note:") == true })
         XCTAssertTrue(document.runs.contains { $0.text == "嵌入笔记" && $0.style.link?.hasPrefix("weibei-note:") == true })
         XCTAssertTrue(document.runs.contains { $0.text == "来源：资料名" && $0.style.link?.hasPrefix("weibei-source:") == true })
         XCTAssertTrue(document.runs.contains { $0.attachment == .math(latex: "x^2", display: false) })
         XCTAssertTrue(document.runs.contains {
-            if case let .code(source, _) = $0.attachment { return source.contains("$x$ and [[literal]]") }
+            if case let .code(source, _) = $0.attachment { return source.contains("$x$ and [[literal]] **结尾。**继续") }
             return false
         })
         XCTAssertTrue(document.runs.contains {
@@ -162,6 +167,23 @@ final class NativeChatMarkdownTests: XCTestCase {
         let firstHeight = coordinator.measuredHeight()
         XCTAssertTrue(firstHeight.isFinite && firstHeight > 0)
         textView.layoutSubtreeIfNeeded()
+        func checkCodeAttachmentSize() {
+            var checked = false
+            manager.enumerateTextLayoutFragments(from: manager.textContentManager?.documentRange.location, options: [.ensuresLayout]) { fragment in
+                for provider in fragment.textAttachmentViewProviders {
+                    guard let attachment = provider.textAttachment as? NativeChatTextAttachment,
+                          case .code = attachment.descriptor else { continue }
+                    checked = true
+                    let frame = fragment.frameForTextAttachment(at: provider.location)
+                    XCTAssertEqual(frame.width, textView.frame.width, accuracy: 0.5)
+                    XCTAssertGreaterThan(frame.height, CGFloat(codeSource.components(separatedBy: "\n").count) * coordinator.fontSize)
+                    XCTAssertEqual(provider.view?.frame.size, frame.size)
+                }
+                return true
+            }
+            XCTAssertTrue(checked)
+        }
+        checkCodeAttachmentSize()
         var originalAttachments: [NativeChatTextAttachment] = []
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
             if let attachment = value as? NativeChatTextAttachment { originalAttachments.append(attachment) }
@@ -172,6 +194,7 @@ final class NativeChatMarkdownTests: XCTestCase {
         let narrowHeight = coordinator.measuredHeight()
         XCTAssertTrue(narrowHeight.isFinite && narrowHeight >= firstHeight)
         textView.layoutSubtreeIfNeeded()
+        checkCodeAttachmentSize()
         coordinator.submit(markdown: source + "\n\n回答结束。", messageID: messageID)
         await fulfillment(of: [completed], timeout: 5)
         XCTAssertTrue(coordinator.view === textView)
